@@ -16,7 +16,7 @@ public static class LocalizationManager
     {
         var exeDir = GetExeDirectory();
 
-        var configPath = Path.Combine(exeDir, "MCC-TUI.yml");
+        var configPath = Path.Combine(exeDir, "MCC-TUI-config", "MCC-TUI.yml");
         if (File.Exists(configPath))
         {
             try
@@ -32,7 +32,7 @@ public static class LocalizationManager
             }
         }
 
-        var langPath = Path.Combine(exeDir, "lang", $"{CurrentLanguage}.yml");
+        var langPath = Path.Combine(exeDir, "MCC-TUI-config", "lang", $"{CurrentLanguage}.yml");
         if (File.Exists(langPath))
         {
             try

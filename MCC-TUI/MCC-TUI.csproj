@@ -15,12 +15,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Content Include="MCC-TUI.yml">
+    <Content Include="MCC-TUI-config\MCC-TUI.yml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>MCC-TUI-config\%(Filename)%(Extension)</Link>
     </Content>
-    <Content Include="lang\*.yml">
+    <Content Include="MCC-TUI-config\lang\*.yml">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <Link>lang\%(Filename)%(Extension)</Link>
+      <Link>MCC-TUI-config\lang\%(Filename)%(Extension)</Link>
     </Content>
   </ItemGroup>
 

@@ -30,7 +30,7 @@
    - **启动后 TUI 保持运行，不关闭。用户可继续操作或手动关闭 TUI。**
 
 ## 多语言支持
-- **配置文件**：`MCC-TUI.yml`，位于 exe 同目录，通过 `language` 字段切换：
+- **配置文件**：`MCC-TUI.yml`，位于 exe 同目录的 `MCC-TUI-config/` 子目录下，通过 `language` 字段切换：
   ```yaml
   language: zh_cn   # 中文
   language: en_us   # 英文
@@ -85,14 +85,16 @@ MCC-TUI/
 │   ├── MCC-TUI.csproj                      # .NET 8 项目文件
 │   ├── Program.cs                          # 主入口 + TUI 界面逻辑
 │   ├── LocalizationManager.cs              # 多语言管理器
-│   ├── MCC-TUI.yml                         # 语言配置（language: zh_cn / en_us）
-│   └── lang/
-│       ├── zh_cn.yml                       # 中文字符串
-│       └── en_us.yml                       # 英文字符串
+│   └── MCC-TUI-config/                     # 语言配置目录
+│       ├── MCC-TUI.yml                     # 语言配置（language: zh_cn / en_us）
+│       └── lang/
+│           ├── zh_cn.yml                   # 中文字符串
+│           └── en_us.yml                   # 英文字符串
 ├── test/                                   # 部署测试目录
 │   ├── MCC-TUI.exe                         # 构建产物
-│   ├── MCC-TUI.yml                         # 部署用语言配置
-│   ├── lang/                               # 部署用语言文件
+│   ├── MCC-TUI-config/                     # 部署用配置目录
+│   │   ├── MCC-TUI.yml                     # 部署用语言配置
+│   │   └── lang/                           # 部署用语言文件
 │   ├── MinecraftClient.exe                 # MCC 可执行文件
 │   └── config/                             # MCC 配置文件目录（不上传）
 └── mcc/                                    # MCC 上游源码（不上传）
@@ -113,12 +115,13 @@ dotnet add package YamlDotNet
 设置 `<AssemblyName>MCC-TUI</AssemblyName>` 并添加内容文件：
 ```xml
 <ItemGroup>
-  <Content Include="MCC-TUI.yml">
+  <Content Include="MCC-TUI-config\MCC-TUI.yml">
     <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <Link>MCC-TUI-config\%(Filename)%(Extension)</Link>
   </Content>
-  <Content Include="lang\*.yml">
+  <Content Include="MCC-TUI-config\lang\*.yml">
     <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    <Link>lang\%(Filename)%(Extension)</Link>
+    <Link>MCC-TUI-config\lang\%(Filename)%(Extension)</Link>
   </Content>
 </ItemGroup>
 ```
