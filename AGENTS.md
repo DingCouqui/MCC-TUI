@@ -7,20 +7,37 @@
 - **语言**：C#（与 MCC 一致，可直接复用其配置逻辑，且团队学习成本最低）
 - **TUI 框架**：[Terminal.Gui](https://github.com/gui-cs/Terminal.Gui)（类似 WinForms 的事件驱动模型，提供标签、按钮、列表等控件）
 - **构建与发布**：.NET SDK 8.0 + `dotnet CLI`，最终通过 `dotnet publish` 生成单文件自包含可执行程序
+- **输出名称**：`MCC-TUI.exe`
+- **命名空间**：`MccTui`
+- **版本控制**：Git，远程仓库 `https://github.com/DingCouqui/MCC-TUI`（main 分支）
 
 ## 功能需求
 1. **主界面第一行**：显示 `[管理] [+]`。
-   - `[管理]` 为静态标签。
-   - `[+]` 为一个可获取焦点的按钮。
-2. **交互流程**：
-   - 用户通过 Tab/方向键将光标移至 `[+]`，按 `Enter` 键。
+   - `[管理]` 为可获取焦点的标签。
+   - `[+]` 为可获取焦点的按钮。
+2. **焦点导航**：
+   - 使用左右方向键在 `[管理]` 和 `[+]` 之间切换焦点。
+   - 在主界面按 ESC 不会退出程序。
+3. **交互流程**：
+   - 用户按 `Enter` 点击 `[+]`。
    - 在按钮下方动态显示一个文件列表，列出与 `MinecraftClient.exe` 同级 `config` 目录下的所有 `.ini` 文件。
    - 列表第一列为文件名称（不含路径），左对齐。
    - 用户可使用上下方向键移动光标选择文件，按 `Enter` 确认。
-3. **启动 MCC**：
+   - 按 `ESC` 或 `Backspace` 可返回主界面焦点。
+4. **启动 MCC**：
    - 根据选中的 `.ini` 文件，拼接启动参数作为第一个位置参数传入 `"config/选中文件.ini"`（MCC 通过 `args[0]` 作为配置文件路径，非 `--config=` 选项）。
    - 使用 `System.Diagnostics.Process.Start` 启动同目录下的 `MinecraftClient.exe`（或 Linux/macOS 下的 `MinecraftClient`）。
    - **启动后 TUI 保持运行，不关闭。用户可继续操作或手动关闭 TUI。**
+
+## 多语言支持
+- **配置文件**：`MCC-TUI.yml`，位于 exe 同目录，通过 `language` 字段切换：
+  ```yaml
+  language: zh_cn   # 中文
+  language: en_us   # 英文
+  ```
+- **语言文件**：`lang/zh_cn.yml` 和 `lang/en_us.yml`，YAML 格式键值对存储
+- **实现**：`LocalizationManager` 在启动时读取配置并加载对应语言文件，通过 `L("key")` 便捷方法获取字符串
+- **回退**：配置文件缺失或无效时默认使用 `zh_cn`
 
 ## 架构约束
 - **进程隔离**：TUI 启动器仅负责启动 MCC，不与其建立 IPC 通信，不捕获其输出。启动后 MCC 在独立窗口/终端中运行（由操作系统决定）。
@@ -59,6 +76,28 @@
 dotnet add package JetBrains.Annotations
 ```
 
+## 文件结构
+```
+MCC-TUI/
+├── AGENTS.md
+├── .gitignore                              # 排除 bin/obj/publish/mcc/test/config
+├── MCC-TUI/                                # 源代码目录
+│   ├── MCC-TUI.csproj                      # .NET 8 项目文件
+│   ├── Program.cs                          # 主入口 + TUI 界面逻辑
+│   ├── LocalizationManager.cs              # 多语言管理器
+│   ├── MCC-TUI.yml                         # 语言配置（language: zh_cn / en_us）
+│   └── lang/
+│       ├── zh_cn.yml                       # 中文字符串
+│       └── en_us.yml                       # 英文字符串
+├── test/                                   # 部署测试目录
+│   ├── MCC-TUI.exe                         # 构建产物
+│   ├── MCC-TUI.yml                         # 部署用语言配置
+│   ├── lang/                               # 部署用语言文件
+│   ├── MinecraftClient.exe                 # MCC 可执行文件
+│   └── config/                             # MCC 配置文件目录（不上传）
+└── mcc/                                    # MCC 上游源码（不上传）
+```
+
 ## 实现步骤
 
 ### 1. 项目初始化
@@ -66,3 +105,36 @@ dotnet add package JetBrains.Annotations
 dotnet new console -n MCC-TUI
 cd MCC-TUI
 dotnet add package Terminal.Gui --version 2.0.0-pre.1802
+dotnet add package JetBrains.Annotations
+dotnet add package YamlDotNet
+```
+
+### 2. 配置 .csproj
+设置 `<AssemblyName>MCC-TUI</AssemblyName>` 并添加内容文件：
+```xml
+<ItemGroup>
+  <Content Include="MCC-TUI.yml">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+  </Content>
+  <Content Include="lang\*.yml">
+    <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <Link>lang\%(Filename)%(Extension)</Link>
+  </Content>
+</ItemGroup>
+```
+
+### 3. 编写 Program.cs 关键点
+- `Application.Init(driverName: "NetDriver")` —— 使用 NetDriver 避免 CJK 乱码
+- `Console.OutputEncoding = UTF8` —— 设置控制台编码
+- `Label.CanFocus = true` + `KeyDown` 事件 —— 实现标签可聚焦
+- `View.KeyDown` 拦截 `Key.Esc` —— 阻止 ESC 退出程序
+- `ListView.KeyDown` 拦截 `Key.Esc` / `Key.Backspace` —— 返回主界面
+- `Process.Start` 使用位置参数 `"config/xxx.ini"`
+
+### 4. 构建发布
+```bash
+dotnet publish -c Release -r win-x64 --self-contained true \
+  -p:PublishSingleFile=true \
+  -p:IncludeNativeLibrariesForSelfExtract=true \
+  -o publish
+```
