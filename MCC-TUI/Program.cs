@@ -56,6 +56,7 @@ partial class Program
 
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Console.InputEncoding = System.Text.Encoding.UTF8;
+        Console.TreatControlCAsInput = true;
 
         Application.Init(driverName: "NetDriver");
 
@@ -68,9 +69,25 @@ partial class Program
 
         _window.KeyDown += (s, e) =>
         {
-            DebugLogger.Log($"WinKeyDown: {e.KeyCode}, handled={e.Handled}");
+            var focused = Application.Top?.MostFocused;
+            DebugLogger.Log($"WinKeyDown: {e.KeyCode}, handled={e.Handled}, focused={focused?.GetType().Name ?? "null"}");
             if (e == Key.Esc)
+            {
+                if (_instanceOutputFrame!.Visible)
+                {
+                    ExitInstanceView();
+                    e.Handled = true;
+                    return;
+                }
+                if (_fileListFrame!.Visible)
+                {
+                    _fileListFrame.Visible = false;
+                    _addButton!.SetFocus();
+                    e.Handled = true;
+                    return;
+                }
                 e.Handled = true;
+            }
         };
 
         _manageLabel = new Label
@@ -112,7 +129,7 @@ partial class Program
         _fileListView.KeyDown += (s, e) =>
         {
             DebugLogger.Log($"FileListKey: {e.KeyCode}");
-            if (e == Key.Esc || e == Key.Backspace)
+            if (e == Key.Backspace)
             {
                 _fileListFrame!.Visible = false;
                 _addButton!.SetFocus();
@@ -149,11 +166,6 @@ partial class Program
             DebugLogger.Log($"OutputViewKey: {e.KeyCode}, vis={_instanceOutputFrame!.Visible}");
             if (!_instanceOutputFrame.Visible)
                 return;
-            if (e == Key.Esc || e == Key.Backspace)
-            {
-                ExitInstanceView();
-                e.Handled = true;
-            }
         };
         _instanceOutputFrame.Add(_outputView);
         _instanceOutputFrame.ColorScheme = outputColorScheme;
@@ -218,12 +230,12 @@ partial class Program
                 var name = Path.GetFileNameWithoutExtension(selectedFile);
                 var info = AddInstanceTab(name);
 
-                DebugLogger.Log($"Launching MCC: {McClientExe} \"{configArg}\" BasicIO");
+                DebugLogger.Log($"Launching MCC: {McClientExe} \"{configArg}\"");
 
                 var psi = new ProcessStartInfo
                 {
                     FileName = McClientExe,
-                    Arguments = $"\"{configArg}\" BasicIO",
+                    Arguments = $"\"{configArg}\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
