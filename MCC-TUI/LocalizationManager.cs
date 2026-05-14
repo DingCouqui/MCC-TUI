@@ -6,7 +6,7 @@ namespace MccTui;
 
 public static class LocalizationManager
 {
-    private const string DefaultConfigYml = "language: zh_cn\n";
+    private const string DefaultConfigYml = "language: zh_cn\ndebug: false\n";
 
     private const string DefaultZhCnYml =
 @"title: ""MCC TUI 启动器""
@@ -40,6 +40,7 @@ error: ""Error""
         .Build();
 
     public static string CurrentLanguage { get; private set; } = "zh_cn";
+    public static bool IsDebugEnabled { get; private set; }
 
     public static void Initialize()
     {
@@ -56,6 +57,7 @@ error: ""Error""
                 var config = _deserializer.Deserialize<ConfigData>(yaml);
                 if (config?.Language is "zh_cn" or "en_us")
                     CurrentLanguage = config.Language;
+                IsDebugEnabled = config?.Debug ?? false;
             }
             catch
             {
@@ -121,5 +123,6 @@ error: ""Error""
     private class ConfigData
     {
         public string? Language { get; set; }
+        public bool Debug { get; set; }
     }
 }

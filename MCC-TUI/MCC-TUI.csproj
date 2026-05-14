@@ -25,4 +25,17 @@
     </Content>
   </ItemGroup>
 
+  <Target Name="CopyToTest" AfterTargets="Build" Condition="'$(SkipCopyToTest)' != 'true'">
+    <Delete Files="$(ProjectDir)..\test\*.dll" />
+    <Delete Files="$(ProjectDir)..\test\MCC-TUI.pdb" />
+    <Delete Files="$(ProjectDir)..\test\*.json" />
+    <RemoveDir Directories="$(ProjectDir)..\test\fr-FR" Condition="Exists('$(ProjectDir)..\test\fr-FR')" />
+    <RemoveDir Directories="$(ProjectDir)..\test\ja-JP" Condition="Exists('$(ProjectDir)..\test\ja-JP')" />
+    <RemoveDir Directories="$(ProjectDir)..\test\pt-PT" Condition="Exists('$(ProjectDir)..\test\pt-PT')" />
+    <RemoveDir Directories="$(ProjectDir)..\test\zh-Hans" Condition="Exists('$(ProjectDir)..\test\zh-Hans')" />
+    <RemoveDir Directories="$(ProjectDir)..\test\lang" Condition="Exists('$(ProjectDir)..\test\lang')" />
+    <Exec Command="dotnet publish &quot;$(ProjectPath)&quot; -c $(Configuration) -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -p:SkipCopyToTest=true -o &quot;$(ProjectDir)..\test&quot;" />
+    <Delete Files="$(ProjectDir)..\test\MCC-TUI.pdb" />
+  </Target>
+
 </Project>
