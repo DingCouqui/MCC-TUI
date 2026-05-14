@@ -56,7 +56,8 @@
 - **回退**：配置文件缺失或无效时默认使用 `zh_cn`
 
 ## 架构约束
-- **Headless 启动**：MCC 通过 `UseShellExecute = false, CreateNoWindow = true` 以 Headless 模式启动。stdout/stderr 通过 `RedirectStandardOutput` / `RedirectStandardError` 捕获，stdin 通过 `RedirectStandardInput` 保留写入接口供未来扩展。
+- **子进程启动**：MCC 通过 P/Invoke `CreateProcess` + `CREATE_NEW_CONSOLE` + `SW_SHOWMINNOACTIVE` 启动。`CREATE_NEW_CONSOLE` 给 MCC 独立控制台（`ClassicConsoleBackend` 的 `BufferWidth` / `ReadConsoleInput` 等 API 均能正常工作），`SW_SHOWMINNOACTIVE` 让新窗口**最小化且不抢焦点**（TUI 保持响应用户输入）。stdout/stderr 通过 `cmd /c "... > tempFile 2>&1"` 重定向到临时文件，TUI 在后台线程中**增量读取 tempFile** 捕获输出。**不使用 .NET Process.Start 的 RedirectStandardOutput** 管道重定向（见已知问题：MCC 连接失败）。stdin 不做重定向，子进程自动继承独立控制台的输入句柄，不与 TUI 的 NetDriver 竞争 `ReadConsoleInput()`。
+- **后台线程**：MCC 实例的 tempFile 读取和进程退出监视跑在 `Task.Factory.StartNew(..., LongRunning)` 专用线程上，不消耗 ThreadPool。轮询延迟用 `await Task.Delay(100)` 非阻塞等待，避免 `Thread.Sleep` 占住线程。
 - **MCC 启动参数**：仅传入配置文件路径作为第一个位置参数（`MinecraftClient.exe "config/xxx.ini"`），**不传 `BasicIO` 标志**。MCC 使用默认 `ClassicConsoleBackend`，其内部最终调用 `System.Console.WriteLine()`，重定向仍能正常捕获输出。
 - **线程模型**：`OutputDataReceived` / `ErrorDataReceived` / `Exited` 事件在 ThreadPool 线程触发。输出通过 `ConcurrentQueue` 暂存。**轮询方式**：使用 `System.Threading.Timer`（后台线程） + `Application.Invoke`（调度到 UI 主线程），每 200ms 批量消费 `ConcurrentQueue` 并更新 UI。**不使用 `Application.AddTimeout`**（见已知问题）。
 - **文件系统依赖**：假设启动器所在目录即为 MCC 根目录，包含 `MinecraftClient.exe` 和 `config` 子文件夹。
@@ -159,6 +160,41 @@ var pollTimer = new System.Threading.Timer(_ =>
    _isDragging = false;
    ```
    确保复制操作后拖拽状态机复位，后续鼠标选区正常。
+
+### MCC `RedirectStandardOutput` 导致连接失败 + 多实例键盘失效
+
+**现象**：
+1. 通过 TUI 启动 MCC 后，`[MCC] 失去连接`，`TimeoutDetector` 触发，随后退出清理时 `Console.get_BufferWidth()` 崩溃（`IOException: 句柄无效`）
+2. 单实例正常，启动第 2 个 MCC 后 TUI 键盘/鼠标事件全部失效
+
+**原因**（多层问题叠加）：
+
+1. **管道重定向覆盖 STD_OUTPUT_HANDLE**：`.NET Process.Start` 的 `RedirectStandardOutput = true` 设置 `STARTF_USESTDHANDLES`，将子进程 `STD_OUTPUT_HANDLE` 替换为管道句柄。`ClassicConsoleBackend` 退出时调用 `Console.get_BufferWidth()` → `GetStdHandle(STD_OUTPUT_HANDLE)` 拿到的不是控制台句柄 → `IOException`。`CreateNoWindow` 参数无法解决此问题。
+
+2. **共享控制台导致输入竞争**：TUI 使用 `NetDriver` 通过 `ReadConsoleInput()` 获取键盘事件。如果 MCC 与 TUI **共享同一个控制台**（无 `CREATE_NEW_CONSOLE`），MCC 的 `ClassicConsoleBackend` 读线程也会调用 `ReadConsoleInput()`。两个进程从同一输入队列消费事件 → 用户按键被 MCC 抢走 → TUI 收不到 → UI 操作全部失效。
+
+3. **新控制台窗口抢焦点**：修复问题 2 时加入 `CREATE_NEW_CONSOLE`，MCC 获得独立控制台，但 Windows 默认将新窗口置于前台 → TUI 失去焦点 → 键盘事件仍无法到达 TUI。
+
+4. **ThreadPool 线程耗尽**：每个 MCC 实例消耗 2 个 `Task.Run()` 线程（`ReadOutputFile` + `WaitForSingleObject`），线程内部使用 `Thread.Sleep` 阻塞等待。ThreadPool 默认最小线程数有限，多实例时可能耗尽 → 定时器回调 (`System.Threading.Timer`) 无法按时执行 → 输出轮询中断。
+
+**解决方案**：
+
+1. 用 **P/Invoke `CreateProcess`** 替代 `.NET Process.Start`，设置 `CREATE_NEW_CONSOLE`（独立控制台 = 不竞争 `ReadConsoleInput()`）+ `STARTF_USESHOWWINDOW` + `SW_SHOWMINNOACTIVE`(7)（窗口最小化且不激活 = TUI 不失焦）：
+   ```csharp
+   si.dwFlags = (int)STARTF_USESHOWWINDOW;
+   si.wShowWindow = SW_SHOWMINNOACTIVE;
+   uint flags = NORMAL_PRIORITY_CLASS | CREATE_NEW_CONSOLE;
+   ```
+
+2. 用 **`cmd /c "... > tempFile 2>&1"`** 替代管道重定向，将 MCC 输出重定向到临时文件。TUI 在后台线程中增量读取 tempFile：
+   ```csharp
+   var cmdLine = new StringBuilder(
+       $"cmd /c \"\"{exePath}\" {arguments} > \"{tempFile}\" 2>&1\"", 4096);
+   ```
+
+3. 使用 **`Task.Factory.StartNew(..., TaskCreationOptions.LongRunning)`** 替代 `Task.Run()`，避免消耗 ThreadPool；轮询用 **`await Task.Delay(100)`** 替代 `Thread.Sleep(100)`，非阻塞释放线程。
+
+4. 在输出处理中加入 **`EnqueueFiltered`** 过滤 `IOException` 崩溃堆栈（`BufferWidth` 仍会因 `STARTF_USESTDHANDLES` 而在退出时失败，但崩溃输出被抑制）。
 
 ### ESC 键盘路由丢失
 

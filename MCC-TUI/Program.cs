@@ -2,6 +2,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using Terminal.Gui;
 
@@ -16,6 +18,8 @@ sealed class InstanceInfo
     public ObservableCollection<string> OutputLines = new();
     public bool HasExited;
     public int ExitCode;
+    public string? TempOutputFile;
+    public bool SuppressCrashLine;
 }
 
 partial class Program
@@ -70,22 +74,26 @@ partial class Program
         _window.KeyDown += (s, e) =>
         {
             var focused = Application.Top?.MostFocused;
-            DebugLogger.Log($"WinKeyDown: {e.KeyCode}, handled={e.Handled}, focused={focused?.GetType().Name ?? "null"}");
+            DebugLogger.Log($"WinKeyDown: {e.KeyCode}, handled={e.Handled}, focused={focused?.GetType().Name ?? "null"}, outputVis={_instanceOutputFrame!.Visible}, fileListVis={_fileListFrame!.Visible}");
             if (e == Key.Esc)
             {
+                DebugLogger.Log($"WinKeyDown: ESC routing, outputVis={_instanceOutputFrame!.Visible}, fileListVis={_fileListFrame!.Visible}");
                 if (_instanceOutputFrame!.Visible)
                 {
+                    DebugLogger.Log("WinKeyDown: ESC => ExitInstanceView");
                     ExitInstanceView();
                     e.Handled = true;
                     return;
                 }
                 if (_fileListFrame!.Visible)
                 {
+                    DebugLogger.Log("WinKeyDown: ESC => close file list");
                     _fileListFrame.Visible = false;
                     _addButton!.SetFocus();
                     e.Handled = true;
                     return;
                 }
+                DebugLogger.Log("WinKeyDown: ESC => blocked (already at top level)");
                 e.Handled = true;
             }
         };
@@ -232,44 +240,15 @@ partial class Program
 
                 DebugLogger.Log($"Launching MCC: {McClientExe} \"{configArg}\"");
 
-                var psi = new ProcessStartInfo
+                var launchResult = StartMccWithTempFile(McClientExe, $"\"{configArg}\"", BaseDir, info, name);
+                if (launchResult == null)
                 {
-                    FileName = McClientExe,
-                    Arguments = $"\"{configArg}\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    RedirectStandardInput = true,
-                    WorkingDirectory = BaseDir
-                };
+                    DebugLogger.Log("Launch failed");
+                    MessageBox.ErrorQuery(L("error"), L("error_launch_failed"), L("ok"));
+                    return;
+                }
 
-                var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-
-                process.OutputDataReceived += (s, ev) =>
-                {
-                    if (ev.Data != null)
-                        info.OutputQueue.Enqueue(SanitizeOutput(ev.Data));
-                };
-
-                process.ErrorDataReceived += (s, ev) =>
-                {
-                    if (ev.Data != null)
-                        info.OutputQueue.Enqueue(SanitizeOutput(ev.Data));
-                };
-
-                process.Exited += (s, ev) =>
-                {
-                    info.HasExited = true;
-                    info.ExitCode = process.ExitCode;
-                    info.OutputQueue.Enqueue($"--- {L("process_exited")} ({info.ExitCode}) ---");
-                };
-
-                process.Start();
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
-                info.Process = process;
+                info.Process = launchResult;
             }
             catch (Exception ex)
             {
@@ -422,12 +401,17 @@ partial class Program
     private static void EnterInstanceView(InstanceInfo info)
     {
         DebugLogger.Log($"Entering instance view: [{info.Name}]");
+        var preFocus = Application.Top?.MostFocused?.GetType().Name ?? "null";
+        DebugLogger.Log($"EnterInstanceView: pre-focus={preFocus}");
 
         _activeOutputInstance = info;
         _instanceOutputFrame!.Title = string.Format(L("output_title"), info.Name);
         _outputView!.Lines = info.OutputLines;
         _instanceOutputFrame.Visible = true;
         _outputView.SetFocus();
+
+        var postFocus = Application.Top?.MostFocused?.GetType().Name ?? "null";
+        DebugLogger.Log($"EnterInstanceView: post-focus={postFocus} _outputView.CanFocus={_outputView.CanFocus}");
     }
 
     private static void ExitInstanceView()
@@ -466,7 +450,7 @@ partial class Program
         }
 
         if (_pollCounter % 20 == 0)
-            DebugLogger.Log($"PollOutput: #{_pollCounter} active=[{_activeOutputInstance.Name}]");
+            DebugLogger.Log($"PollOutput: #{_pollCounter} active=[{_activeOutputInstance.Name}] focused={Application.Top?.MostFocused?.GetType().Name ?? "null"}");
 
         var info = _activeOutputInstance;
         var lines = info.OutputLines;
@@ -510,8 +494,197 @@ partial class Program
         return line.Replace("\r", "");
     }
 
+    private static void EnqueueFiltered(InstanceInfo info, string rawLine)
+    {
+        if (info.SuppressCrashLine)
+        {
+            if (rawLine.StartsWith("   at ") || rawLine.StartsWith("--- End of stack trace"))
+                return;
+            if (rawLine.StartsWith("--- 进程已退出") || rawLine.StartsWith("--- Process exited"))
+            {
+                info.SuppressCrashLine = false;
+                return;
+            }
+            info.SuppressCrashLine = false;
+        }
+
+        if (rawLine.StartsWith("Unhandled exception.") && rawLine.Contains("IOException"))
+        {
+            info.SuppressCrashLine = true;
+            return;
+        }
+
+        info.OutputQueue.Enqueue(SanitizeOutput(rawLine));
+    }
+
     [GeneratedRegex(@"\x1b\[[0-9;]*m")]
     private static partial Regex AnsiEscapeRegex();
 
     private static string L(string key) => LocalizationManager.Get(key);
+
+    // ── Temp-file capture with independent console ──────────────────────
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcess(
+        string? lpApplicationName,
+        StringBuilder? lpCommandLine,
+        IntPtr lpProcessAttributes,
+        IntPtr lpThreadAttributes,
+        bool bInheritHandles,
+        uint dwCreationFlags,
+        IntPtr lpEnvironment,
+        string? lpCurrentDirectory,
+        ref STARTUPINFO lpStartupInfo,
+        out PROCESS_INFORMATION lpProcessInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpReserved;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpDesktop;
+        [MarshalAs(UnmanagedType.LPWStr)] public string lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
+    private const uint CREATE_NEW_CONSOLE = 0x00000010;
+    private const uint NORMAL_PRIORITY_CLASS = 0x00000020;
+    private const uint STARTF_USESHOWWINDOW = 0x00000001;
+    private const short SW_SHOWMINNOACTIVE = 7;
+    private const uint INFINITE = 0xFFFFFFFF;
+
+    private static Process? StartMccWithTempFile(string exePath, string arguments,
+        string workingDir, InstanceInfo info, string name)
+    {
+        // Temp file to capture MCC output
+        string tempFile = Path.Combine(Path.GetTempPath(), $"MCC-TUI-{Guid.NewGuid():N}.log");
+        info.TempOutputFile = tempFile;
+
+        // cmd /c redirects stdout+stderr to temp file
+        // CREATE_NEW_CONSOLE gives MCC its own console → no input competition with TUI
+        // SW_SHOWMINNOACTIVE = minimize without stealing focus
+        var cmdLine = new StringBuilder(
+            $"cmd /c \"\"{exePath}\" {arguments} > \"{tempFile}\" 2>&1\"", 4096);
+
+        var si = new STARTUPINFO();
+        si.cb = Marshal.SizeOf(si);
+        si.dwFlags = (int)STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOWMINNOACTIVE;
+        uint flags = NORMAL_PRIORITY_CLASS | CREATE_NEW_CONSOLE;
+
+        if (!CreateProcess(null, cmdLine, IntPtr.Zero, IntPtr.Zero, true,
+                           flags, IntPtr.Zero, workingDir, ref si, out var pi))
+        {
+            DebugLogger.Log($"CreateProcess failed, error={Marshal.GetLastWin32Error()}");
+            return null;
+        }
+
+        CloseHandle(pi.hThread);
+
+        Process process;
+        try { process = Process.GetProcessById(pi.dwProcessId); }
+        catch (Exception ex)
+        {
+            DebugLogger.Log($"GetProcessById failed: {ex.Message}");
+            CloseHandle(pi.hProcess);
+            return null;
+        }
+
+        // Start reading output file in background (LongRunning to avoid ThreadPool starvation)
+        _ = Task.Factory.StartNew(() => ReadOutputFileAsync(tempFile, info), TaskCreationOptions.LongRunning);
+        // Monitor process exit (LongRunning — WaitForSingleObject blocks indefinitely)
+        _ = Task.Factory.StartNew(() =>
+        {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            GetExitCodeProcess(pi.hProcess, out uint exitCode);
+            CloseHandle(pi.hProcess);
+            info.HasExited = true;
+            info.ExitCode = (int)exitCode;
+            info.OutputQueue.Enqueue($"--- {L("process_exited")} ({info.ExitCode}) ---");
+            DebugLogger.Log($"Process [{name}] exited with code {info.ExitCode}");
+        }, TaskCreationOptions.LongRunning);
+
+        return process;
+    }
+
+    private static async Task ReadOutputFileAsync(string path, InstanceInfo info)
+    {
+        long lastOffset = 0;
+        var buffer = new byte[8192];
+
+        while (!info.HasExited || new FileInfo(path) is { Exists: true, Length: long len } && len > lastOffset)
+        {
+            try
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 4096);
+                fs.Seek(lastOffset, SeekOrigin.Begin);
+
+                while (true)
+                {
+                    int bytesRead = fs.Read(buffer, 0, buffer.Length);
+                    if (bytesRead <= 0) break;
+                    lastOffset += bytesRead;
+
+                    string chunk = System.Text.Encoding.UTF8.GetString(buffer, 0, bytesRead);
+
+                    foreach (var line in chunk.Split('\n'))
+                    {
+                        var trimmed = line.TrimEnd('\r');
+                        if (trimmed.Length > 0)
+                            EnqueueFiltered(info, trimmed);
+                    }
+                }
+            }
+            catch (FileNotFoundException)
+            {
+                // File not created yet, wait and retry
+            }
+            catch (Exception ex)
+            {
+                DebugLogger.Log($"ReadFile error: {ex.Message}");
+            }
+
+            if (!info.HasExited)
+                await Task.Delay(100);
+        }
+
+        // Clean up temp file
+        try
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+        catch { }
+    }
 }
