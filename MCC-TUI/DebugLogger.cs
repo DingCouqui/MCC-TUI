@@ -9,7 +9,8 @@ public static class DebugLogger
 
     public static void Initialize(string logDir)
     {
-        _logPath = Path.Combine(logDir, "MCC-TUI.log");
+        var ts = DateTime.Now.ToString("yyyy-MM-dd-HH-mm-ss");
+        _logPath = Path.Combine(logDir, $"MCC-TUI-{ts}.log");
     }
 
     public static void Log(string message)

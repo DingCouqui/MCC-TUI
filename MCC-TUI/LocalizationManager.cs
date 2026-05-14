@@ -19,6 +19,8 @@ error_launch_failed: ""无法启动 MCC:""
 ok: ""确定""
 hint: ""提示""
 error: ""错误""
+output_title: ""{0} 输出""
+process_exited: ""进程已退出""
 ";
 
     private const string DefaultEnUsYml =
@@ -32,6 +34,8 @@ error_launch_failed: ""Failed to launch MCC:""
 ok: ""OK""
 hint: ""Hint""
 error: ""Error""
+output_title: ""{0} Output""
+process_exited: ""Process exited""
 ";
 
     private static readonly Dictionary<string, string> _strings = new();
